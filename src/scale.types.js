@@ -1,5 +1,5 @@
-import {valueOrDefault} from 'chart.js/helpers';
-import {getState} from './state';
+import { valueOrDefault } from 'chart.js/helpers';
+import { getState } from './state';
 
 /**
  * @typedef {import('chart.js').Point} Point
@@ -7,7 +7,66 @@ import {getState} from './state';
  * @typedef {import('../types/options').LimitOptions} LimitOptions
  * @typedef {{min: number, max: number}} ScaleRange
  * @typedef {import('../types/options').ScaleLimits} ScaleLimits
+ * 
+ * @typedef {{ scaleValue: (normalized: number) => number,
+ *             normalizeValue: (scaled: number) => number,
+ *             applyDelta:(range: ScaleRange, delta: ScaleRange, limits: ScaleRange) => ScaleRange}} ScaleTransformations
  */
+
+/** 
+ * 
+ * 
+ * @type {{ [key: string]: ScaleTransformations }} 
+ * */
+
+const scaleTransformationFunctions =
+{
+  linear: {
+    normalizeValue: (scaled) => scaled,
+    scaleValue: (unscaled) => unscaled,
+    applyDelta: applyDeltaLC
+  },
+  logarithmic: {
+    normalizeValue: (scaled) => Math.log10(scaled),
+    scaleValue: (unscaled) => Math.pow(10, unscaled),
+    applyDelta: applyDeltaLC
+  },
+
+}
+
+/**
+ * @param {ScaleRange} rangePre
+ * @param {number} zoom
+ * @param {number} center
+ * @returns {ScaleRange}
+ */
+function zoomDeltaLC(rangePre, zoom, center) {
+  // zoomDelta for linear and continuous functions
+  const range = rangePre.max - rangePre.min;
+  const newRange = range * (zoom - 1);
+
+  // `scale.getValueForPixel()` can return a value less than the `scale.min` or
+  // greater than `scale.max` when `centerPoint` is outside chartArea.
+  const minPercent = Math.max(0, Math.min(1,
+    (center - rangePre.min) / range || 0
+  ));
+
+  const maxPercent = 1 - minPercent;
+
+  return {
+    min: newRange * minPercent,
+    max: newRange * maxPercent
+  };
+}
+
+function applyDeltaLC(scale, range, delta) {
+  return { min: range.min + delta.min, max: range.max }
+}
+
+function applyDeltaLC(rangePre, rangeDelta) {
+  return { min: rangePre.min + rangeDelta.min, max: rangePre.max + rangeDelta.max }
+}
+
 
 /**
  * @param {Scale} scale
@@ -15,7 +74,7 @@ import {getState} from './state';
  * @param {Point} center
  * @returns {ScaleRange}
  */
-function zoomDelta(scale, zoom, center) {
+function zoomDeltaold(scale, zoom, center) {
   const range = scale.max - scale.min;
   const newRange = range * (zoom - 1);
 
@@ -23,7 +82,7 @@ function zoomDelta(scale, zoom, center) {
   // `scale.getValueForPixel()` can return a value less than the `scale.min` or
   // greater than `scale.max` when `centerPoint` is outside chartArea.
   const minPercent = Math.max(0, Math.min(1,
-    (scale.getValueForPixel(centerPoint) - scale.min) / range || 0
+    (scale.getValueForPixel(scale.isHorizontal() ? center.x : center.y) - scale.min) / range || 0
   ));
 
   const maxPercent = 1 - minPercent;
@@ -74,12 +133,12 @@ function getRange(scale, pixel0, pixel1) {
  * @param {boolean|'pan'} [zoom]
  * @returns {boolean}
  */
-export function updateRange(scale, {min, max}, limits, zoom = false) {
+export function updateRange(scale, { min, max }, limits, zoom = false, { mindelta, maxdelta } = { mindelta: 0, maxdelta: 0 }) {
   const state = getState(scale.chart);
-  const {options: scaleOpts} = scale;
+  const { options: scaleOpts } = scale;
 
   const scaleLimits = getScaleLimits(scale, limits);
-  const {minRange = 0} = scaleLimits;
+  const { minRange = 0 } = scaleLimits;
   const minLimit = getLimit(state, scale, scaleLimits, 'min', -Infinity);
   const maxLimit = getLimit(state, scale, scaleLimits, 'max', Infinity);
 
@@ -103,7 +162,7 @@ export function updateRange(scale, {min, max}, limits, zoom = false) {
   scaleOpts.min = min;
   scaleOpts.max = max;
 
-  state.updatedScaleLimits[scale.id] = {min, max};
+  state.updatedScaleLimits[scale.id] = { min, max };
 
   // return true if the scale range is changed
   return scale.parse(min) !== scale.min || scale.parse(max) !== scale.max;
@@ -111,7 +170,7 @@ export function updateRange(scale, {min, max}, limits, zoom = false) {
 
 function zoomNumericalScale(scale, zoom, center, limits) {
   const delta = zoomDelta(scale, zoom, center);
-  const newRange = {min: scale.min + delta.min, max: scale.max - delta.max};
+  const newRange = { min: scale.min + delta.min, max: scale.max - delta.max };
   return updateRange(scale, newRange, limits, true);
 }
 
@@ -133,12 +192,19 @@ function existCategoryFromMaxZoom(scale) {
   }
 }
 
+function zoomScale(scale, zoom, center, limits) {
+  const minPre, maxPre = (scale.min, scale.max);
+  const centerPre = scale.getValueForPixel(scale.isHorizontal() ? center.x : center.y);
+
+
+}
+
 function zoomCategoryScale(scale, zoom, center, limits) {
   const delta = zoomDelta(scale, zoom, center);
   if (scale.min === scale.max && zoom < 1) {
     existCategoryFromMaxZoom(scale);
   }
-  const newRange = {min: scale.min + integerChange(delta.min), max: scale.max - integerChange(delta.max)};
+  const newRange = { min: scale.min + integerChange(delta.min), max: scale.max - integerChange(delta.max) };
   return updateRange(scale, newRange, limits, true);
 }
 
@@ -149,7 +215,7 @@ function scaleLength(scale) {
 function panCategoryScale(scale, delta, limits) {
   const labels = scale.getLabels();
   const lastLabelIndex = labels.length - 1;
-  let {min, max} = scale;
+  let { min, max } = scale;
   // The visible range. Ticks can be skipped, and thus not reliable.
   const range = Math.max(max - min, 1);
   // How many pixels of delta is required before making a step. stepSize, but limited to max 1/10 of the scale length.
@@ -166,7 +232,7 @@ function panCategoryScale(scale, delta, limits) {
     applied = min === 0;
   }
 
-  return updateRange(scale, {min, max}, limits) || applied;
+  return updateRange(scale, { min, max }, limits) || applied;
 }
 
 const OFFSETS = {
@@ -181,7 +247,7 @@ const OFFSETS = {
 };
 
 function panNumericalScale(scale, delta, limits, pan = false) {
-  const {min: prevStart, max: prevEnd, options} = scale;
+  const { min: prevStart, max: prevEnd, options } = scale;
   const round = options.time && options.time.round;
   const offset = OFFSETS[round] || 0;
   const newMin = scale.getValueForPixel(scale.getPixelForValue(prevStart + offset) - delta);
@@ -191,7 +257,7 @@ function panNumericalScale(scale, delta, limits, pan = false) {
     // with min === max or because the chart has 0 plottable area).
     return true;
   }
-  return updateRange(scale, {min: newMin, max: newMax}, limits, pan ? 'pan' : false);
+  return updateRange(scale, { min: newMin, max: newMax }, limits, pan ? 'pan' : false);
 }
 
 function panNonLinearScale(scale, delta, limits) {
@@ -213,3 +279,4 @@ export const panFunctions = {
   logarithmic: panNonLinearScale,
   timeseries: panNonLinearScale,
 };
+
